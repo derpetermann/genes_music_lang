@@ -1,0 +1,1142 @@
+---
+title: "Exploring the relationship between Grammar, Phonology, Music and Genes in Northern Asia and Greenland"
+author: "Peter Ranacher and Balthasar Bickel"
+date: '`r Sys.Date()`'
+output: 
+  pdf_document:
+    fig_crop: true
+    fig_caption: true
+    latex_engine: pdflatex
+    toc: true
+    toc_depth: 4
+    number_section: true
+    pandoc_args: [
+      "--variable=lof",
+      "--bibliography=C:/Users/ranacher/Desktop/limits/genetic_linguistic_distances/R/references/genetics.bib"]
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, dev = 'cairo_pdf')
+```
+
+\clearpage
+
+# Preprocessing
+## Packages and data
+For the analysis we mainly use the following three packages:
+
+  - `ade4` provides tools for multivariate data analysis (mostly for ecological data)
+  
+  - `adespatial` provides tools for multiscale spatial analysis of multivariate data
+  
+  - `vegan` provides tools for ordination methods and diversity analysis
+  
+
+```{r load packages, results='hide', message=FALSE, warning=FALSE}
+library(adespatial)
+library(ade4)
+library(vegan)
+library(knitr)
+library(ape)
+library(gclus)
+library(sp)
+library(dplyr)
+library(ggplot2)
+library(leaflet)
+library(reshape2)
+library(extrafont)
+library(grid)
+library(missMDA)
+library(pcaMethods)
+library(FactoMineR)
+library(kableExtra)
+library(xtable)
+font_import(pattern ="FTLC", prompt=F)
+loadfonts(device="win")
+```
+
+```{r, include=FALSE}
+knit_hooks$set(crop = hook_pdfcrop, pars = function(before, options, envir) {if(before) {par(family=my_font)} else NULL})
+
+opts_chunk$set( dev = 'cairo_pdf', dev.args=list(bg='transparent'),
+               crop=T,
+               message = F,
+               warning = F,
+               cache.comments=F,
+               autodep=T,
+               pars=T)
+
+my_font <- 'Helvetica'
+options(width=180, knitr.kable.NA = '', knitr.table.format = "latex")
+
+```
+
+
+## Grammar and Phonology
+Our data comprise numerical and partly categorical variables for grammar and phonology, distance matrices for genetics and music, and geographical locations of thirteen sites (or peoples) in Northern Asia and North America. 
+
+Data on grammar and phonology are aggregated from the following sources:
+
+- AUTOTYP [@AUTOTYP]
+- WALS [@WALS], with recoding by Balthasar Bickel (https://fossils.ivs.uzh.ch/wals-recoding/home)^[This repository will be made public before publication]
+- ANU Phonotactics database [@ANU]
+- PHOIBLE [@PHOIBLE]
+
+The split into phonology vs. grammar is based on the narrow definition in `typology-data-checkout/split-data.R` because we are interested in the difference in distribution between segments (and their features) as opposed to all other aspects of linguistic structure. We extract a subset from the data comprising languages from thirteen different sites.
+Notes: 
+- In AUTOTYP and WALS, Buriat is represented by ISO code `bua` (Buriat in general), while in PHOIBLE  it is represented by ISO code  `bxr` and in the ANU data by `bxm`. We map all of them below to `bua`.
+
+```{r}
+# Define filepath
+data_folder <- file.path("data")   # Data folder
+
+# Read the grammar, phonology and typlogy data (meta data)
+phonology_list <- readRDS(file.path(data_folder, "phonology/phonology.list.RDS"))
+grammar_list <- readRDS(file.path(data_folder, "grammar/grammar.list.RDS"))
+typology_coverage_df <- readRDS(file.path (data_folder, "typology/typology.coverage.RDS"))
+
+# Define subset
+siberia_sample <- c(
+ "[i-ain][a-12][g-ainu1240]",    # Ainu
+ "[i-bua][a-1095][g-buri1258]",  # Buriat
+ "[i-bxm][a-][g-mong1330]",      # Buriat (Mongolia)
+ "[i-bxr][a-][g-russ1264]",      # Buriat (Russia)
+ "[i-ckt][a-56][g-chuk1273]",    # Chukchi
+ "[i-eve][a-738][g-even1260]",   # Even
+ "[i-evn][a-527][g-even1259]",   # Evenki
+ "[i-kal][a-511][g-kala1399]",   # West Greenlandic
+ "[i-jpn][a-118][g-nucl1643]",   # Japanese
+ "[i-kor][a-141][g-kore1280]",   # Korean
+ "[i-kpy][a-1808][g-kory1246]",  # Koryak
+ "[i-nio][a-2172][g-ngan1291]",  # Nganasan
+ "[i-sel][a-2393][g-selk1253]",  # Selkup
+ "[i-sah][a-2662][g-yaku1245]",  # Yakut
+ "[i-ykg][a-423][g-nort2745]")   # Yukagir (Tundra)
+ #"[i-yux][a-2797][g-sout2750]")  # Yukagir (Kolyma)
+
+# Extract meta data for the above subset
+siberia_metadata_all <- subset(typology_coverage_df, UULID %in% siberia_sample)
+siberia_metadata <- subset(siberia_metadata_all, !isocode %in% c('bxm','bxr'))
+
+counts <- xtabs(~autotyp.Stock, siberia_metadata, drop.unused.levels = T)
+rownames(siberia_metadata) <- with(siberia_metadata,
+                                   ifelse(autotyp.Stock %in% names(counts[counts>1]),
+                                          paste(autotyp.Stock, autotyp.Language, sep="/"),
+                                          paste(autotyp.Language)))
+
+rownames(siberia_metadata) <- gsub('Yukagir/','', rownames(siberia_metadata))
+```
+
+
+We only use variables with one data point per language, and only variables with non-constant values (which otherwise can't deliver a distance signal). At the same time, we also remap `bxr` and `bxm` to `bua` (cf. above)
+
+```{r}
+# This function trims the data and only keeps variables in the study area 
+# with one data point per language and non-constant values
+trim_data <- function(data.list, trim.to=siberia_metadata_all, extra.coverage=.5) {
+  lgs <- lapply(data.list, function(l) {
+	  l$UULID <- ifelse(l$isocode %in% c('bxm','bxr'),
+	  		   '[i-bua][a-1095][g-buri1258]',
+		      paste(l$UULID))
+	  subset(l, UULID %in% trim.to$UULID)
+	 })
+  vars <- lgs[sapply(lgs, function(l) {
+	   length(l$UULID)==length(unique(l$UULID)) &
+	   length(unique(l[,1]))>1 &
+	     length(unique(l$UULID)) >= floor(extra.coverage*length(trim.to$UULID))
+	  })]
+  return(lapply(vars, function(l) l[,c(1,3)]))
+}
+
+# This function computes the coverage of all languages
+compute_coverage <- function(data.list, gg=siberia_metadata) {
+  x <- sapply(gg$UULID, function(l) {
+          coverage <- round(mean(sapply(data.list, function(v) { l %in% v$UULID })),2)*100
+        })
+  df <- data.frame(UULID=names(x), Coverage=x)
+  gg$Language <- rownames(gg)
+  df.g <- merge(df, gg)
+  return(df.g)
+}
+```
+
+We trim the linguistic data. This leaves the following number of variables. (For a detailed list, see the appendix; for the metadata and detailed explanations, see the original sources.)
+
+```{r}
+# Trim the data
+siberia_grammar_list <- trim_data(grammar_list)
+siberia_phonology_list <- trim_data(phonology_list)
+```
+
+For each site we compute the coverage, i.e. the percentage of available variables per site.  
+
+```{r, message=FALSE, warning=FALSE}
+# Compute the coverage for each variable and visualize it 
+grammar_coverage <- compute_coverage(siberia_grammar_list) %>% 
+  select(Language, Coverage)
+phonology_coverage <- compute_coverage(siberia_phonology_list) %>% 
+  select(Language,Coverage)
+
+# Change variable names (see next section)
+# Grammar
+grammar_coverage[grammar_coverage$Language == 'Chukchi-Kamchatkan/Chukchi', 
+                 "Language"] <-'Chukchi'
+grammar_coverage[grammar_coverage$Language == 'Tungusic/Evenki', "Language"] <- 'Evenki'
+grammar_coverage[grammar_coverage$Language == 'Greenlandic Eskimo (West)', 
+                 "Language"] <-'West Greenland'
+grammar_coverage[grammar_coverage$Language == 'Uralic/Selkup', "Language"] <- 'Selkup'
+grammar_coverage[grammar_coverage$Language == 'Yukagir (Tundra)', "Language"] <- 'Yukagir'
+grammar_coverage[grammar_coverage$Language == 'Tungusic/Even', "Language"] <- 'Even'
+grammar_coverage[grammar_coverage$Language == 'Buriat', "Language"] <- 'Buryat'
+grammar_coverage[grammar_coverage$Language == 'Uralic/Nganasan', "Language"] <- 'Nganasan'
+grammar_coverage[grammar_coverage$Language == 'Chukchi-Kamchatkan/Koryak', 
+                 "Language"] <- 'Koryak'
+
+# Phonology
+phonology_coverage[phonology_coverage$Language == 'Chukchi-Kamchatkan/Chukchi', 
+                   "Language"] <-'Chukchi'
+phonology_coverage[phonology_coverage$Language == 'Tungusic/Evenki', "Language"] <- 'Evenki'
+phonology_coverage[phonology_coverage$Language == 'Greenlandic Eskimo (West)', 
+                   "Language"] <-'West Greenland'
+phonology_coverage[phonology_coverage$Language == 'Uralic/Selkup', "Language"] <- 'Selkup'
+phonology_coverage[phonology_coverage$Language == 'Yukagir (Tundra)', 
+                   "Language"] <- 'Yukagir'
+phonology_coverage[phonology_coverage$Language == 'Tungusic/Even', "Language"] <- 'Even'
+phonology_coverage[phonology_coverage$Language == 'Buriat', "Language"] <- 'Buryat'
+phonology_coverage[phonology_coverage$Language == 'Uralic/Nganasan', 
+                   "Language"] <- 'Nganasan'
+phonology_coverage[phonology_coverage$Language == 'Chukchi-Kamchatkan/Koryak', 
+                   "Language"] <- 'Koryak'
+
+# Visualize the coverage in a table
+inner_join(grammar_coverage, phonology_coverage, by='Language') %>% 
+  arrange(desc(Coverage.x)) %>%
+kable (booktabs=T, linesep = "", 
+      caption ='Data coverage for all thirteen sites.',
+      col.names=c('Language','Grammar (%)', 'Phonology (%)')) %>%
+      kable_styling()
+```
+
+
+Finally, we flatten the nested linguistic data and convert them to data frames. 
+```{r}
+# This function flattens the nested linguistic data
+flatten <- function(data.list, gg=siberia_metadata) {
+  df.list <- lapply(seq_along(data.list), function(v) {
+    df <- data.list[[v]]
+    var.name <- gsub('(.*\\$)', '\\2', names(data.list)[v])
+    names(df)[1] <- var.name
+    return(select(df, UULID, everything()))
+    })
+  df.flat <- Reduce(function(x,y) full_join(x, y, by='UULID'), df.list)
+  rownames(df.flat) <- sapply(df.flat$UULID, function(x) rownames(gg[gg$UULID %in% x,]))
+  return(df.flat)}
+
+# Flatten the data
+grammar <- flatten(siberia_grammar_list)
+phonology <- flatten(siberia_phonology_list)
+```
+
+## Genetics, Music and Geography
+
+We read the distance matrices for genetics and music, as well as the spatial coordinates of the thirteen sites. 
+```{r}
+# Read the gentic data 
+genetics <- read.csv(file.path(data_folder,"genetics/SNPs13PopDist.csv"),sep=",", 
+                     header=TRUE, row.names=1) 
+
+# Read the music data
+music <- read.csv(file.path(data_folder,"music/MusicAll13PopDist.csv"),sep=",",
+                  header=TRUE, row.names=1)
+
+
+# Read the spatial coordinates
+geo <- read.csv(file.path(data_folder, "geo/geographic_coordinates.csv"),sep=";", 
+                header=TRUE, row.names=1)
+```
+
+Since the data are gathered from different sources, the names used for the thirteen sites differ. We adjust the names. 
+
+```{r}
+# The rownames and colnames of dataframes differ. Of course. 
+list_A <- list(genetics, music, geo, grammar, phonology)
+differing_names <- lapply(list_A, function(y) 
+  lapply(list_A, function (x) setdiff(rownames(y), rownames(x))))
+
+# We update all non-matching names
+
+# Genetics
+colnames(genetics)[colnames(genetics) == 'westGreenland'] <- 'West Greenland'
+rownames(genetics)[rownames(genetics) == 'westGreenland'] <- 'West Greenland'
+colnames(genetics)[colnames(genetics) == 'Evenk'] <- 'Evenki'
+rownames(genetics)[rownames(genetics) == 'Evenk'] <- 'Evenki'
+
+# Music
+colnames(music)[colnames(music) == 'WestGreenland'] <- 'West Greenland'
+rownames(music)[rownames(music) == 'WestGreenland'] <- 'West Greenland'
+colnames(music)[colnames(music) == 'Nganasa'] <- 'Nganasan'
+rownames(music)[rownames(music) == 'Nganasa'] <- 'Nganasan'
+colnames(music)[colnames(music) == 'Evenk'] <- 'Evenki'
+rownames(music)[rownames(music) == 'Evenk'] <- 'Evenki'
+
+# Grammar
+rownames(grammar)[rownames(grammar) == 'Chukchi-Kamchatkan/Chukchi'] <-'Chukchi'
+rownames(grammar)[rownames(grammar) == 'Tungusic/Evenki'] <- 'Evenki'
+rownames(grammar)[rownames(grammar) == 'Greenlandic Eskimo (West)'] <-'West Greenland'
+rownames(grammar)[rownames(grammar) == 'Uralic/Selkup'] <- 'Selkup'
+rownames(grammar)[rownames(grammar) == 'Yukagir (Tundra)'] <- 'Yukagir'
+rownames(grammar)[rownames(grammar) == 'Tungusic/Even'] <- 'Even'
+rownames(grammar)[rownames(grammar) == 'Buriat'] <- 'Buryat'
+rownames(grammar)[rownames(grammar) == 'Uralic/Nganasan'] <- 'Nganasan'
+rownames(grammar)[rownames(grammar) == 'Chukchi-Kamchatkan/Koryak'] <- 'Koryak'
+
+# Phonology 
+rownames(phonology)[rownames(phonology) == 'Chukchi-Kamchatkan/Chukchi'] <-'Chukchi'
+rownames(phonology)[rownames(phonology) == 'Tungusic/Evenki'] <- 'Evenki'
+rownames(phonology)[rownames(phonology) == 'Greenlandic Eskimo (West)'] <-'West Greenland'
+rownames(phonology)[rownames(phonology) == 'Uralic/Selkup'] <- 'Selkup'
+rownames(phonology)[rownames(phonology) == 'Yukagir (Tundra)'] <- 'Yukagir'
+rownames(phonology)[rownames(phonology) == 'Tungusic/Even'] <- 'Even'
+rownames(phonology)[rownames(phonology) == 'Buriat'] <- 'Buryat'
+rownames(phonology)[rownames(phonology) == 'Uralic/Nganasan'] <- 'Nganasan'
+rownames(phonology)[rownames(phonology) == 'Chukchi-Kamchatkan/Koryak'] <- 'Koryak'
+
+
+# Now all entries match
+#list_A <- list(genetics, music, geo, grammar, phonology)
+#lapply(list_A, function(y) 
+#  lapply(list_A, function (x) setdiff(rownames(y), rownames(x))))
+```
+
+# Dimensionality reduction
+## Factorial analysis of mixed data (FAMD) (of Grammar and Phonology)
+
+In view of the fact that the data are partly numerical and partly categorical, we use a balanced mix of PCA and MCA [@Leetal2008FactoMineR]. Empty values are imputed using the methods developed by @Josseetal2016missMDA.
+
+
+```{r}
+# Impute empty values
+grammar_imputed <- imputeFAMD(grammar[,-1])
+phonology_imputed <- imputeFAMD(phonology[,-1])
+
+# Perform FAMD
+grammar_famd <- FAMD(grammar[,-1],
+                     tab.comp=grammar_imputed$tab.disj,
+                     graph=F)
+
+phonology_famd <- FAMD(phonology[,-1],
+                       tab.comp=phonology_imputed$tab.disj,
+                       graph=F)
+```
+
+
+
+## Principal Coordinates Analysis (PCoA) (of Music and Genes)
+
+We perform a principal coordinate analysis (PCoA) on the distance matrices for genetics and music [@dray_2006]. Similar to a PCA, a PCoA produces a set of orthogonal axes whose importance is measured by eigenvalues. However, in contrast to the PCA, non-Euclidean distance matrices can be used.
+
+
+```{r pcoa}
+# Convert the matrices into dist objects
+genetics_dist <- as.dist(genetics, diag = FALSE, upper = FALSE)
+music_dist <- as.dist(music, diag = FALSE, upper = FALSE)
+
+
+# Perform PCoA
+# correct for negative eigenvalues using the Cailliez procedure 
+genetics_pcoa <- pcoa(genetics_dist, correction = "cailliez")
+music_pcoa <- pcoa(music_dist, correction = "cailliez") 
+```
+
+
+
+## Distance-based Moran's Eigenvector Map Analysis (dbMEM) (of the spatial locations)
+
+First, we plot the geographic locations of all sites on a map. 
+
+```{r map, message=FALSE, warning=FALSE,  fig.width=7, fig.height=6, fig.cap="\\label{fig:figs}Geographic location of the sites.", fig.path='figures/', dev='cairo_pdf'}
+# Define a them for the maps
+theme_map <- function(...) {
+  theme_minimal() +
+  theme(
+    text = element_text(family = "Frutiger Light Condensed", color = "#22211d"),
+    axis.line = element_blank(),
+    axis.text.x = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks = element_blank(),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank(),
+    plot.background = element_rect(fill = "#f5f5f2", color = NA), 
+    panel.background = element_rect(fill = "#f5f5f2", color = NA), 
+    legend.background = element_rect(fill = "#f5f5f2", color = NA),
+    ...
+  )
+}
+    
+world = map_data("world")
+geo_for_map <- cbind(geo, names=rownames(geo))
+
+gg <- ggplot()
+gg <- gg + coord_map('ortho',
+                     orientation=c(120,0,180),
+                      ylim=c(33,80)) 
+gg <- gg + geom_polygon(data=world, aes(x=long, y=lat, group=group), color=NA,
+                        fill='lightgrey')
+gg <- gg + geom_point(data=geo_for_map, aes(x=Long, y=Lat), size=2, colour='orange')
+gg <- gg + geom_text(data=geo_for_map[!geo_for_map$names %in% c("Yukagir", "Chukchi"), ],
+                     aes(x=Long, y=Lat, label=names, vjust=-.9), size=3) 
+gg <- gg + geom_text(data=geo_for_map[geo_for_map$names %in% c("Yukagir"), ],
+                     aes(x=Long, y=Lat, label=names, vjust=2, hjust=-.3), size=3) 
+gg <- gg + geom_text(data=geo_for_map[geo_for_map$names %in% c("Chukchi"), ],
+                     aes(x=Long, y=Lat, label=names, vjust=-1.1, hjust = .3), size=3) 
+gg <- gg + theme_map()
+gg <- gg + labs(caption = "Location of the 13 sites in Northern Asia and Greenland") 
+gg
+```
+
+
+We compute three spatial distance matrices: 
+
+a) `geo_dist` comprises the great circle distances between the point locations of all sites.
+b) `geo_poly_dist` comprises the shortest distance between the polygons of all sites. 
+c) `geo_cent_dist` comprises the distacne between the centroids of the polygons of all site. 
+
+The polygons for b and c come from ethnologue, distance were computed in PostGIS. 
+We perform a distance-based Moran's eigenvector map analysis (dbMEM) to decompose the spatial structure of the distance matrice [@borcard_2002]. Similar to a PCoA, dbMEM reveals the principal coordinates of the spatial locations from which the distance matrix was generated. We only return those eigenfunctions that correspond to positive autocorrelation. 
+
+
+```{r dbmem, message=FALSE, warning=FALSE}
+
+# Convert the coordinates to spatial points
+geo_locations <- SpatialPoints(geo, proj4string = CRS("+proj=longlat +datum=WGS84"))
+geo_locations$names <- row.names(geo_locations)
+
+# Compute the geo_dist
+geo_mat <- spDists(geo_locations, geo_locations)
+colnames(geo_mat) <- rownames(geo_mat)  <- row.names(geo_locations) 
+geo_dist_point <- as.dist(geo_mat, diag = FALSE, upper = FALSE)
+
+# Import the geo_poly_dist and geo_cent_dist
+poly_dist_df <- read.csv(file.path(data_folder, "geo/polygon_distances.csv"), sep=",",
+                         header=TRUE)
+
+poly_dist_df <- poly_dist_df[order(poly_dist_df$name_a,
+                                   poly_dist_df$name_b), ]
+
+# Convert data.frame from PostGIs to dist objects
+poly_dist_mat <- matrix(nrow=nrow(geo_mat), 
+                        ncol=ncol(geo_mat))
+
+cent_dist_mat <- matrix(nrow=nrow(geo_mat), 
+                        ncol=ncol(geo_mat))
+
+rownames(poly_dist_mat) <- rownames(geo_mat)
+colnames(poly_dist_mat) <- colnames(geo_mat)
+
+rownames(cent_dist_mat) <- rownames(geo_mat)
+colnames(cent_dist_mat) <- colnames(geo_mat)
+
+for (i in 1:nrow(poly_dist_df)){
+  a <- poly_dist_df[i, "name_a"]
+  b <- poly_dist_df[i, "name_b"]
+
+  p_dist <- poly_dist_df[i, "shortest_poly_distance"]
+  c_dist <- poly_dist_df[i, "centroid_distance"]
+  poly_dist_mat[a, b] <- p_dist
+  cent_dist_mat[a, b] <- c_dist}
+
+geo_dist_poly <- as.dist(poly_dist_mat, diag = FALSE, upper = FALSE)
+geo_dist_cent <- as.dist(cent_dist_mat, diag = FALSE, upper = FALSE)
+
+# Compute the Principal coordinates for the spatial distance matrices using dbmem
+geo_point_dbmem <- dbmem(geo_dist_point, thresh=NULL, MEM.autocor = "positive", silent = TRUE)
+rownames(geo_point_dbmem) <- rownames(geo)
+
+geo_poly_dbmem <- dbmem(geo_dist_poly, thresh=NULL, MEM.autocor = "positive", silent = TRUE)
+rownames(geo_poly_dbmem) <- rownames(geo)
+
+geo_cent_dbmem <- dbmem(geo_dist_cent, thresh=NULL, MEM.autocor = "positive", silent = TRUE)
+rownames(geo_cent_dbmem) <- rownames(geo)
+
+```
+
+
+## Visualizing the explained variance
+
+We visualize the results of the principal components and principal coordinates analysis in a scree plot. The plot shows the fraction of total variance in the data as explained by each PC or PCo in decreasing order. 
+
+
+```{r}
+# Define a theme for the scree plots
+theme_scree <- function(...) {
+  theme_minimal() +
+  theme(
+    text = element_text(family = "Frutiger Light Condensed", color = "#22211d"),
+    axis.line = element_blank(),
+    legend.background = element_rect(fill = "#f5f5f2", color = NA),
+    panel.border = element_blank(),
+    ...
+  )
+}
+
+# This function generates the scree plot
+plot_pc_scree<- function(eigenval, title, type="PC") {
+
+  if (type == "PC") {
+    pc_index = seq(1:nrow(eigenval))
+    eigenval = data.frame(val = eigenval[, 1], 
+                          idx = pc_index,
+                          rel = eigenval[, 2],
+                          cum = eigenval[, 3])
+    pc_legend = "Principal Components"
+    subtitle= paste("Explained variance by ", pc_legend) 
+    pc_labels = paste(rep(c("PC"), nrow(eigenval)), seq(1:nrow(eigenval)))
+    ann_offset_y = 6}
+  
+  else if (type == "PCo"){
+    pc_index = seq(1:length(eigenval))
+    eigenval = data.frame(val = eigenval, 
+                          idx = pc_index,
+                          rel = eigenval/sum(eigenval)*100,
+                          cum = cumsum(eigenval/sum(eigenval)*100))
+    pc_legend = "Principal Coordinates"
+    subtitle= paste("Explained variance by ", pc_legend) 
+    pc_labels = paste(rep(c("PCo"), nrow(eigenval)), seq(1:nrow(eigenval)))
+    ann_offset_y = 10}
+  
+  else stop("Type must be either PC or PCo")
+  p <- ggplot(data=eigenval,aes(x=idx, y=rel))
+  p <- p + geom_bar(stat="identity")
+  p <- p + xlab(pc_legend) + ylab("Explained variance (%)")
+  p <- p + geom_line(data=eigenval, aes(x=idx, y=cum), colour="orange")
+  p <- p + geom_point(data=eigenval, aes(x=idx, y=cum), colour="orange")
+  p <- p + scale_x_discrete(limits=pc_labels)
+  p <- p + labs(title=title, subtitle=subtitle)
+  # p <- p + theme(plot.title = element_text(hjust = 0.5))  
+  p <- p + annotate ("label", x = tail(pc_index, n=1)-2.3, 
+                     y = tail(eigenval$cum, n=1) - ann_offset_y, 
+                     label="Cumulative explained variance",
+                     colour ="orange", label.size=NA, size=3.5)
+  p <- p + theme_scree()
+  p}
+
+```
+
+We extract the eigenvalues from the PCos/PCs and visualize the explained variance.
+
+```{r scree_genetics, fig.cap="\\label{fig:figs}Scree plot of explained variance (Genetics).", fig.path='figures/', dev='cairo_pdf'}
+
+# Extract eigenvalues from PC/PCo results 
+genetics_ev <- genetics_pcoa$values$Corr_eig
+music_ev <- music_pcoa$values$Corr_eig
+grammar_ev <- grammar_famd$eig
+phonology_ev <- phonology_famd$eig
+
+# Generate Scree plots 
+plot_pc_scree(eigenval=genetics_ev, title="Genetics", type="PCo")
+
+```
+
+```{r scree_music, fig.cap="\\label{fig:figs}Scree plot of explained variance (Music).", fig.path='figures/', dev='cairo_pdf'}
+plot_pc_scree(eigenval=music_ev, title="Music", type="PCo")
+```
+
+```{r scree_grammar,  fig.cap="\\label{fig:figs}Scree plot of explained variance (Grammar).", fig.path='figures/', dev='cairo_pdf'}
+plot_pc_scree(eigenval=grammar_ev, title="Grammar", type="PC")
+```
+
+```{r scree_phonology, fig.cap="\\label{fig:figs}Scree plot of explained variance (Phonology).", fig.path='figures/', dev='cairo_pdf'}
+plot_pc_scree(eigenval=phonology_ev, title="Phonology", type="PC")
+```
+
+
+## Merging PCs and PCoAs
+
+We have computed the PC/PCos for five factors: genetics, grammar, music, phonology and space. Now, we match the order of sites for each factor and combine all factors in a list.
+
+```{r merge}
+
+# Extract the PCs and the PCos from the PCA and PCoA results
+genetics_pco <- genetics_pcoa$vectors
+music_pco <- music_pcoa$vectors
+grammar_pc <- grammar_famd$ind$coord
+phonology_pc <- phonology_famd$ind$coord 
+
+geo_point_pco <- as.data.frame(geo_point_dbmem)
+geo_poly_pco <- as.data.frame(geo_poly_dbmem)
+geo_cent_pco <- as.data.frame(geo_cent_dbmem)
+
+# Change the column names of all PCs and PCoAs  
+colnames(genetics_pco) <- paste("genetics_pco_", seq(1,ncol(genetics_pco)), sep="")
+colnames(music_pco) <- paste("music_pco_", seq(1,ncol(music_pco)), sep="")
+colnames(grammar_pc) <- paste("grammar_pc_", seq(1,ncol(grammar_pc)), sep="")
+colnames(phonology_pc) <- paste("phonology_pc_", seq(1,ncol(phonology_pc)), sep="")
+
+
+# Collect all factors in a list, order alphabetically 
+factors = list(genetics = genetics_pco[order(rownames(genetics_pco)), ], 
+               music = music_pco[order(rownames(music_pco)), ], 
+               grammar = grammar_pc[order(rownames(grammar_pc)), ], 
+               phonology = phonology_pc[order(rownames(phonology_pc)), ])
+
+```
+
+## Heatmap of PCs and PCos 
+
+We plot a heat map of the PCs/PCos of each factor. We define a function that first normalizes the values of each PC/PCo to range from 0 to 1 and then plots the heat map. 
+
+```{r}
+
+# Define a theme for the heat maps 
+
+theme_heat_maps <- function(...) {
+  theme_minimal() +
+  theme(
+    text = element_text(family = "Frutiger Light Condensed", color = "#22211d"),
+    legend.background = element_rect(fill = NA, color = NA),
+    legend.direction = "horizontal",
+    legend.position = "bottom", 
+    panel.border = element_blank(),
+    panel.grid.major = element_blank(), 
+    panel.grid.minor = element_blank(),
+    panel.background = element_blank(),
+    axis.line = element_blank(),
+    axis.title = element_blank(),
+    axis.text = element_text(size=15),
+    axis.text.x = element_text(vjust = 0, angle = 90, hjust=0),
+    plot.margin=unit(c(3,1,1.5,1.2),"cm"),
+   
+    ...
+  )
+} 
+
+heat_map_pc <- function(pcs, type="PCo"){
+  
+  # Reorder the languages in the matrix 
+  reorder <- c("Ainu", "Japanese", "Korean", "Buryat", "Even", "Evenki", "Yakut", "Selkup", 
+             "Nganasan", "Chukchi", "Koryak", "Yukagir", "West Greenland") 
+  pcs <- pcs[reorder, ]
+
+  cnames <- colnames(pcs)
+  
+  # Normalize the PCs/PCos for each factor 
+  pcs_norm <- sapply(cnames, function (y) {
+    x <- pcs[, y]
+    x_norm <- (x-min(x))/(max(x)-min(x))
+    return (x_norm)}, USE.NAMES = T)
+  
+  if (type == "PC"){
+    colnames(pcs_norm) <- paste("PC", seq(1, ncol(pcs_norm)))
+  }  
+   if (type == "PCo"){
+    colnames(pcs_norm) <- paste("PCo", seq(1, ncol(pcs_norm)))
+  }  
+  
+  rownames(pcs_norm) <- rownames(pcs)
+  melted <- melt(pcs_norm)
+  
+  # Create heatmap
+  h <- ggplot(data = melted, aes(Var1, ordered(Var2, levels=rev(levels(Var2))), fill=value)) 
+  
+  h <- h + geom_tile(colour="grey")
+  h <- h + scale_fill_gradient2(low = "blue", mid = "white", high = "red", 
+                                limit = c(0,1), midpoint=0.5, name = NULL)
+  h <- h + theme_heat_maps()
+  h <- h + coord_fixed()
+  h <- h + scale_x_discrete(position = "top") 
+
+  return (h)
+}  
+
+
+```
+
+```{r heat_map_genetics, fig.cap="\\label{fig:figs} Heat plot of the first eight PCos for genetic for each of the 13 populations. The PCos have been normalized to range from 0 to 1.", fig.path='figures/', dev='cairo_pdf', fig.width=10, fig.height=7}
+
+heat_map_pc(factors_ordered$genetics, type="PCo")
+```
+
+
+```{r heat_map_music, fig.cap="\\label{fig:figs} Heat plot of the first six PCos for music for each of the 13 populations. The PCos have been normalized to range from 0 to 1.", fig.path='figures/', dev='cairo_pdf', fig.width=10, fig.height=7}
+
+heat_map_pc(factors_ordered$music, type="PCo")
+```
+
+```{r heat_map_grammar, fig.cap="\\label{fig:figs} Heat plot of the first five PCs for grammar for each of the 13 populations. The PCos have been normalized to range from 0 to 1.", fig.path='figures/', dev='cairo_pdf', fig.width=10, fig.height=7}
+
+heat_map_pc(factors_ordered$grammar, type="PC")
+```
+
+```{r heat_map_phonology, fig.cap="\\label{fig:figs} Heat plot of the first five PCs for phonology for each of the 13 populations. The PCos have been normalized to range from 0 to 1.", fig.path='figures/', dev='cairo_pdf', fig.width=10, fig.height=7}
+
+heat_map_pc(factors_ordered$phonology, type="PC")
+```
+
+# Correlation Analysis 
+
+We compute the Pearson correlation coefficient between all principal components/ prinicipal coordinates.
+
+```{r pearson, fig.cap="\\label{fig:figs} Pairwise correlation between all principal components / principal coordinates (except for space)", fig.path='figures/', dev='cairo_pdf', fig.width=8, fig.height=8}
+
+pairwise_correlation <- function (data) {
+  
+  # Collect all PCs and PCOs in one data.frame
+  all_pcs <- as.data.frame(unlist(data, recursive = F, use.names = T))
+  colnames(all_pcs) <- sub('.*\\.', '', colnames(all_pcs))
+  colnames(all_pcs)  <- gsub("pc", "PC", colnames(all_pcs))
+  
+  results <- data.frame(var1 = character(),
+                        var2 = character(),
+                        r = numeric(),
+                        sig = character(),
+                        stringsAsFactors=FALSE)
+  
+  done <- character()
+  
+  # add as string to a vector i,j AND j, i 
+  # check if string exists 
+  
+  for (i in colnames(all_pcs))
+    for (j in colnames(all_pcs)){
+      cell_id <- paste (i, j, " ")
+    
+      if (i != j & !cell_id %in% done){
+
+        rev_cell_id <- paste (j, i, " ")
+        done <- c(done, cell_id, rev_cell_id)
+        res <- cor.test(all_pcs[,i], all_pcs[,j])
+        results[nrow(results)+1, c(1,2)] <- c(gsub("_"," ", i), 
+                                            gsub("_"," ", j))
+        results[nrow(results), 3] <- abs(res$estimate)
+        
+        if (res$p.value > 0.05) {sig <- ""}
+        else if (res$p.value <= 0.01) {sig <- "**"}
+        else if (res$p.value > 0.01 & res$p.value <= 0.05) {sig <- "*"}
+        
+        results[nrow(results), 4] <- sig}
+      }
+
+  return (results)
+    }
+
+pwc <- pairwise_correlation(factors_ordered[c("genetics", "grammar", "music", "phonology")])
+
+# Plot the correlation 
+
+# Define a theme for the correlation matrices
+theme_corr <- function(...) {
+  theme_minimal() +
+  theme(
+    text = element_text(family = "Frutiger Light Condensed", color = "#22211d"),
+    legend.background = element_rect(fill = NA, color = NA),
+    legend.direction = "horizontal",
+    legend.position = c(0.65, 0.15), 
+    panel.border = element_blank(),
+    panel.grid.major = element_blank(), 
+    panel.grid.minor = element_blank(),
+    panel.background = element_blank(),
+    axis.line = element_blank(),
+    axis.title = element_blank(),
+    axis.text.y = element_text(vjust = 0.5, size = 10),
+    axis.text.x = element_text(angle=90, hjust=0.5, vjust = 0.5, size = 10),
+    plot.margin=unit(c(3,1,1.5,1.2),"cm"),
+    ...
+  )
+} 
+
+# Visualize the full correlation matrix
+p <- ggplot(data = pwc, aes(var1, var2, fill = r)) 
+p <- p + geom_tile(color = "grey")
+p <- p + scale_fill_gradient(low = "white", high = "red", limit = c(0, 0.9),
+                             name="Pearson's Correlation Coefficient \n(absolute values)")
+p <- p + geom_text(aes(var1, var2, label = sig))
+p <- p + annotate("text", label = "Significance: * p \u2264 0.05, ** p \u2264 0.01", x = 13.2, y = 1.5,
+                  family = "Frutiger Light Condensed")
+p <- p + scale_x_discrete(position="top")
+p <- p + theme_corr()
+p <- p + coord_fixed()
+
+p
+```
+
+
+# Redundancy Analysis
+
+We perform a partial redundancy analysis (RDA) on all factors [@legendre_2012].  RDA is a multiresponse multiple linear regression, i.e. a regression of multiple response variables on multiple explanatory variables [@van_den_wollenberg_1977]. RDA captures the variation in the response variables that can be explained by the explanatory variables. Partial RDA removes the influence of one or more explanatory variables on the response prior to an RDA. In our case, the influence of space is removed. We test different models varying the following parameters:  
+   - the factor used as a response 
+   - the number of explanatory variables
+   - the factors used as explanatory variables
+   - the number of PC/PCos of each factor in the explanatory variables.  
+
+Since we control for spatial autocorrelation, i.e. we hold the influence of space constant, space is neither used as response nor as an explanatory factor. Moreover, we always use all available PC/PCos for the response,
+
+## Wrapper Function
+
+We define a wrapper function to 
+- a) propose different combinations of parameters
+- b) perform an RDA for each combination 
+- c) compute its explained variance and significance. 
+
+The wrapper function returns a data frame with the parameters of each model, the significance and the (adjusted) explained variance ($R^2$). 
+
+```{r function test rda}
+test_rda <- function (data) {
+  
+  "This wrapper function test all possible types of rda models. It varies:
+   - the response
+   - the number of explanatory variables
+   - the factors used as explanatory variables
+   - the number of PC/PCos used for each explanatory variable 
+  
+   For each model the function computes the model's 
+   - R^2
+   - adjusted R^2
+   - significance
+  
+   The function returns a dataframe, where each row captures
+   the parameters of a model and its test scores"
+  
+  # All factors in the model (either response or explanatory)
+
+  factors <- data[c("genetics", "music",
+                    "grammar", "phonology")]
+  
+  # Space serves as a condition in the model 
+  geo <- as.data.frame(data["geo"])
+  
+  # Initialize data frame for results
+  results <- data.frame(response = character(),
+                        nr_exp = numeric(),
+                        explanatory = character(),
+                        nr_pc = character(), 
+                        r2_adj_c = numeric(),
+                        r2_c = numeric(),
+                        sig = numeric(),
+                        stringsAsFactors=FALSE)
+  
+  # For each factor as a response 
+  for (f in names(factors)) {
+  
+    # Define the response and the response name
+    resp_n = f
+    resp = as.data.frame(factors[resp_n])
+    
+    # Define the names of the complement as potential explanatory variables
+    p_exp_n = names(factors[names(factors) != resp_n])
+  
+    # For each number of possible explanatory variables 
+    for (i in 1:length(p_exp_n)) {
+     
+      # Get all possible combinations of explanatory variables 
+      comb <- combn(p_exp_n, i)
+      
+      # For each possible combination of explanatory variables
+      for(c in 1:ncol(comb)){
+            
+        # Gett all possible combinations of PCs/PCos for the given combination 
+        nr_each_f <- do.call(rbind, lapply(factors[comb[, c]], 
+                                         function(x) ncol(x)))
+        pc_comb <- expand.grid(sapply(nr_each_f, seq, simplify=F))
+        colnames(pc_comb) <- rownames(nr_each_f)
+        
+        # For each number of PCs/PCos
+        for(row in 1:nrow(pc_comb)) {
+            
+          " This function call picks the appropriate number 
+          of PCs/PCos from the factors"
+          
+          exp <- do.call(function (nr_pcs, factors){
+            pc_list = lapply (colnames(nr_pcs), 
+                              function (c) {
+                                as.data.frame(factors[[c]])[,1:nr_pcs[,c], drop = FALSE]})
+            names(pc_list) <- colnames(nr_pcs)
+            return (merge_list_to_df(pc_list))}, 
+            list(nr_pcs = pc_comb[row, ,drop = FALSE], factors))
+          
+          # Compute the rda
+          rda <- rda(X = resp, Y = exp, Z = geo)
+          # Compute the explained variance
+          r2 <- RsquareAdj(rda)$r.squared
+          # Compute the adjusted explained variance
+          r2_adj <- RsquareAdj(rda)$adj.r.squared
+          # Compute the p-value of the significance test
+          sig <- anova.cca(rda, step = 10000)$`Pr(>F)`[1]
+
+          # Write the results to a data frame 
+          results[nrow(results)+1, ] <- 
+            c(response = f, 
+              nr_exp = i,
+              explanatory = do.call(paste, 
+                                    c(comb[, c], list(sep = ", "))),
+              nr_pc = do.call(paste, c(as.list(pc_comb[row,]), 
+                                       sep = ", ")),
+              r_2_adj_c = r2_adj,
+              r2_c = r2,
+              sig = sig) 
+          }}}}
+          
+  results$r2 <- as.numeric(as.character(results$r2_c))
+  results$r2_adj <- as.numeric(as.character(results$r2_adj_c))
+  return (results[, c("response","nr_exp", "explanatory", 
+                      "nr_pc", "r2_adj", "r2", "sig")])}
+
+```
+
+## Performing RDA
+
+We execute the wrapper function and compute the RDA for each combination of parameters. We store the results in a data frame. 
+  
+```{r test_rda}
+# Perform the RDA
+rda_results_point <- test_rda(factors_ordered)
+rda_results_poly <- test_rda(factors_ordered_poly)
+rda_results_cent <- test_rda(factors_ordered_cent) 
+```
+
+
+## Visualizing the explained variance
+We query the results and generate a correlation matrix for all pairwise RDA with only one explanatory variable. Each entry in the matrix corresponds to the variance in the response (columns) that is explained by the explanatory variable (rows). The matrix shows the best model for each configuration. As always, the influence  of space is removed. The matrix is not symmetric. The variance in phonology can be explained well by genetics (adjusted $R^2$ = 0.62), whereas the variance in genetics cannot be explained well by phonology (adjusted $R^2$ = 0.16). When capturing the variation in phonology from genetics, RDA first computes a  multiple linear regression  for each variable in the phonology matrix (response variable) on the full matrix of genetics (explanatory variables).
+Then  principal components are computed from the stack of predictions. Thus, RDA extracts the components of genetics, such that they are as much as possible correlated with phonology.
+On the contrary, when capturing the variation in genetics with phonology, RDA extracts the components of phonology such that they are as much as possible correlated with genetics. 
+
+
+```{r correlation matrix}
+
+# A) Filter the results and find the best model for each explanatory/response pair
+# Point distance 
+factors <- c("genetics", "music", "grammar", "phonology")
+
+best_models_point <- lapply(factors, function (y) {
+  lapply(factors, function (x) {
+    best_m <- rda_results_point %>%
+      filter(response == y) %>% 
+      filter(explanatory == x) %>% 
+      filter(r2_adj == max(r2_adj, na.rm=T))
+  return (best_m)})})
+
+names(best_models_point) <- factors
+
+# Polygon distance 
+best_models_poly <- lapply(factors, function (y) {
+  lapply(factors, function (x) {
+    best_m <- rda_results_poly %>%
+      filter(response == y) %>% 
+      filter(explanatory == x) %>% 
+      filter(r2_adj == max(r2_adj, na.rm=T))
+  return (best_m)})})
+
+names(best_models_poly) <- factors
+
+# Centroid distance 
+best_models_cent <- lapply(factors, function (y) {
+  lapply(factors, function (x) {
+    best_m <- rda_results_cent %>%
+      filter(response == y) %>% 
+      filter(explanatory == x) %>% 
+      filter(r2_adj == max(r2_adj, na.rm=T))
+  return (best_m)})})
+
+names(best_models_cent) <- factors
+
+# Simplify the results
+best_models_simp_point <- do.call(rbind, lapply(factors, function (x) {
+  do.call(rbind, best_models_point[[x]])}))
+
+best_models_simp_poly <- do.call(rbind, lapply(factors, function (x) {
+  do.call(rbind, best_models_poly[[x]])}))
+
+best_models_simp_cent <- do.call(rbind, lapply(factors, function (x) {
+  do.call(rbind, best_models_cent[[x]])}))
+
+# If r2_adj is negative change it to 0 
+best_models_simp_point[best_models_simp_point$r2_adj < 0, "r2_adj"] <- 0
+best_models_simp_poly[best_models_simp_poly$r2_adj < 0, "r2_adj"] <- 0
+best_models_simp_cent[best_models_simp_cent$r2_adj < 0, "r2_adj"] <- 0
+
+# Add a colum to indicate the significance level (*, **)
+
+best_models_simp_point[best_models_simp_point$sig > 0.05, "sig_level"] <- ""
+best_models_simp_point[best_models_simp_point$sig <= 0.01 , "sig_level"] <- "**"
+best_models_simp_point[best_models_simp_point$sig > 0.01 & 
+                   best_models_simp_point$sig <= 0.05 , "sig_level"] <- "*"
+
+
+best_models_simp_poly[best_models_simp_poly$sig > 0.05, "sig_level"] <- ""
+best_models_simp_poly[best_models_simp_poly$sig <= 0.01 , "sig_level"] <- "**"
+best_models_simp_poly[best_models_simp_poly$sig > 0.01 & 
+                   best_models_simp_poly$sig <= 0.05 , "sig_level"] <- "*"
+
+best_models_simp_cent[best_models_simp_cent$sig > 0.05, "sig_level"] <- ""
+best_models_simp_cent[best_models_simp_cent$sig <= 0.01 , "sig_level"] <- "**"
+best_models_simp_cent[best_models_simp_cent$sig > 0.01 & 
+                   best_models_simp_cent$sig <= 0.05 , "sig_level"] <- "*"
+
+# B) Find the best match between pair, regardless of 
+# whether a factor is the response or the explanatory variable
+pairs <- merge(best_models_simp[, c(1,3,5,8)], 
+               best_models_simp[, c(1,3,5,8)], by.x=c("response","explanatory"), 
+               by.y=c("explanatory","response"), suffixes=c("_1","_2"))
+pairs$max <- pmax(pairs$r2_adj_1, pairs$r2_adj_2)
+pairs[pairs$max == pairs$r2_adj_1, "max_sig_level"] <- 
+  pairs[pairs$max == pairs$r2_adj_1, "sig_level_1"] 
+pairs[pairs$max == pairs$r2_adj_2, "max_sig_level"] <- 
+  pairs[pairs$max == pairs$r2_adj_2, "sig_level_2"] 
+
+pairs[pairs$max == pairs$r2_adj_1, "max_response"] <- 
+  pairs[pairs$max == pairs$r2_adj_1, "response"] 
+pairs[pairs$max == pairs$r2_adj_2, "max_response"] <- 
+  pairs[pairs$max == pairs$r2_adj_2, "explanatory"]
+
+pairs[pairs$max == pairs$r2_adj_1, "max_explanatory"] <- 
+  pairs[pairs$max == pairs$r2_adj_1, "explanatory"] 
+pairs[pairs$max == pairs$r2_adj_2, "max_explanatory"] <- 
+  pairs[pairs$max == pairs$r2_adj_2, "response"] 
+
+pairs <- pairs[, c("max","max_sig_level","max_response", "max_explanatory")]
+pairs <- unique(pairs)
+
+# Merge them back to the best_models data.frame
+corr_order = list(c("genetics","grammar"), c("genetics", "music"),
+                  c("genetics", "phonology"), c("grammar", "music"),
+                  c("grammar", "phonology"), c("music", "phonology"))
+
+for (x in corr_order) {
+   best_models_simp[best_models_simp[1] == x[1] & best_models_simp[3] == x[2],
+                    "max_r2_adj"] <- 
+    pairs[pairs$max_response %in% x & pairs$max_explanatory %in% x, 1]
+   best_models_simp[best_models_simp[1] == x[1] & best_models_simp[3] == x[2], 
+                    "max_sig_level"] <- 
+    pairs[pairs$max_response %in% x & pairs$max_explanatory %in% x, 2]}
+
+
+```
+
+The full correlation matrix shows the variance in the response explained by each explanatory variable.
+```{r, visualize correlation, warning = FALSE, fig.cap="\\label{fig:figs}Variance in the response explained by each explanatory variable.", fig.path='figures/', dev='cairo_pdf'}
+
+# Extract the data for visualizing the correlation matrices
+corr_full_point <- best_models_simp_point [, c(1,3,5,8)]
+corr_full_poly <- best_models_simp_poly [, c(1,3,5,8)]
+corr_full_cent <- best_models_simp_cent [, c(1,3,5,8)]
+
+corr_semi <- best_models_simp [which( !is.na(best_models_simp$max_r2), 
+                                      arr.ind=TRUE) , c(1,3,9,10)]
+
+# Define a theme for the correlation matrices
+theme_corr <- function(...) {
+  theme_minimal() +
+  theme(
+    text = element_text(family = "Frutiger Light Condensed", color = "#22211d"),
+    legend.background = element_rect(fill = NA, color = NA),
+    legend.direction = "horizontal",
+    legend.position = c(0.5, 1.3), 
+    panel.border = element_blank(),
+    panel.grid.major = element_blank(), 
+    panel.grid.minor = element_blank(),
+    panel.background = element_blank(),
+    axis.line = element_blank(),
+    axis.title = element_text(size = 15, hjust=0.5, vjust=0.4),
+    axis.text = element_text(vjust = 1, size = 10),
+    plot.margin=unit(c(3,1,1.5,1.2),"cm"),
+    ...
+  )
+} 
+
+# Visualize the full correlation matrix (Point)
+c <- ggplot(data = corr_full_point, aes(response, explanatory, 
+                                                     fill = r2_adj)) 
+c <- c + geom_tile(color = "grey")
+c <- c + scale_fill_gradient(low = "white", high = "red", 
+                             limit = c(0,0.8),
+                             name=expression(paste(
+                               "Explained variance \nin response (adjusted ",R^{2},")    ")))
+c <- c + geom_text(aes(response, explanatory, 
+                       label = paste(round(r2_adj,2), sig_level)), 
+                   color = "black", size = 3)
+c <- c + xlab("\nresponse") + ylab("explanatory\n")
+c <- c + theme_corr()
+c <- c + coord_fixed()
+
+c
+
+grid.text("Significance: * p \u2264 0.05, ** p \u2264 0.01", x=unit(0.37, "npc"), 
+          y = unit(0.78, "npc"), just="left",
+          gp=gpar(fontfamily = "Frutiger Light Condensed", cex=0.75))
+
+# Visualize the full correlation matrix (Poly)
+c <- ggplot(data = corr_full_poly, aes(response, explanatory, 
+                                                     fill = r2_adj)) 
+c <- c + geom_tile(color = "grey")
+c <- c + scale_fill_gradient(low = "white", high = "red", 
+                             limit = c(0,0.8),
+                             name=expression(paste(
+                               "Explained variance \nin response (adjusted ",R^{2},")    ")))
+c <- c + geom_text(aes(response, explanatory, 
+                       label = paste(round(r2_adj,2), sig_level)), 
+                   color = "black", size = 3)
+c <- c + xlab("\nresponse") + ylab("explanatory\n")
+c <- c + theme_corr()
+c <- c + coord_fixed()
+
+c
+grid.text("Significance: * p \u2264 0.05, ** p \u2264 0.01", x=unit(0.37, "npc"), 
+          y = unit(0.78, "npc"), just="left",
+          gp=gpar(fontfamily = "Frutiger Light Condensed", cex=0.75))
+
+# Visualize the full correlation matrix (Cent)
+c <- ggplot(data = corr_full_cent, aes(response, explanatory, 
+                                                     fill = r2_adj)) 
+c <- c + geom_tile(color = "grey")
+c <- c + scale_fill_gradient(low = "white", high = "red", 
+                             limit = c(0,0.8),
+                             name=expression(paste(
+                               "Explained variance \nin response (adjusted ",R^{2},")    ")))
+c <- c + geom_text(aes(response, explanatory, 
+                       label = paste(round(r2_adj,2), sig_level)), 
+                   color = "black", size = 3)
+c <- c + xlab("\nresponse") + ylab("explanatory\n")
+c <- c + theme_corr()
+c <- c + coord_fixed()
+
+c
+grid.text("Significance: * p \u2264 0.05, ** p \u2264 0.01", x=unit(0.37, "npc"), 
+          y = unit(0.78, "npc"), just="left",
+          gp=gpar(fontfamily = "Frutiger Light Condensed", cex=0.75))
+
+
+```
+
+The semi-correlation matrix shows the maximum explained variance for each two factors, regardless of which factor is the response/explanatory variable. 
+
+```{r, visualize semi-correlation, warning = FALSE, fig.cap="\\label{fig:figs}Maximum explained variance between each two factors.", fig.path='figures/', dev='cairo_pdf'}
+# Visualize the semi-correlation matrix
+b <- ggplot(data = corr_semi, aes(explanatory, response, 
+                                  fill = max_r2_adj)) 
+b <- b + geom_tile(color = "grey")
+b <- b + scale_fill_gradient(low = "white", high = "red", 
+                             limit = c(0,0.8),
+                             name=expression(paste(
+                               "Maximum explained variance\nbetween each two factors (adjusted ",
+                               R^{2},")    ")))
+b <- b + geom_text(aes(explanatory, response, 
+                       label = paste(round(max_r2_adj,2), 
+                                     max_sig_level)), color = "black", size = 3)
+b <- b + theme_corr()
+b <- b + theme(axis.title=element_blank(), legend.text.align = 0, 
+               legend.position = c(0.5, 1.3))
+b <- b + coord_fixed()
+
+b
+grid.text("Significance: * p \u2264 0.05, ** p \u2264 0.01", x=unit(0.27, "npc"), 
+          y = unit(0.83, "npc"), just="left",
+          gp=gpar(fontfamily = "Frutiger Light Condensed", cex=0.75))
+```
+
+
+\clearpage
+
+# References
+
