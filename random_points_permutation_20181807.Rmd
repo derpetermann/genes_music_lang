@@ -99,6 +99,29 @@ random_points_to_dbmem <- function (r_points){
 factors <- readRDS("factors.RData")
 factors$geo <- geo_pco
 
+
+permute_rda <- function(n_perm, explanatory, response, constraint) {
+#' This function runs n RDAs with permuted data
+#' @parma ... n_perm: the number of permutations
+#' @param ... response: the repsonse variable
+#' @param ... explanatory: the explanatory variable 
+#' @param ... the constraint
+#' @return a list comprising the rda results for each permutation
+
+  permutation_results <- data.frame(r2_adj=rep(NA, n_perm))
+  for (i in 1:n_perm){
+    
+    # permute the response
+    permutation_order <- sample(1:nrow(response))
+    response <- response[permutation_order, ]
+    rda <- rda(X = explanatory, Y = response, Z = constraint)
+    r2_adj <- RsquareAdj(rda)$adj.r.squared
+    permutation_results[i, "r2_adj"] <- r2_adj
+    
+  }
+  return(permutation_results)
+}
+
 # Compute RDA 
 spatially_constrained_rda <- function (response, explanatory, geo_pco) {
 #' This function computes a spatially constrained RDA for all samples in geo_pco
@@ -111,7 +134,7 @@ spatially_constrained_rda <- function (response, explanatory, geo_pco) {
   for (i in 1:n_sample) {
     sample <- paste("sample_", i, sep="")
     constraint <- geo_pco[[sample]]
-    if (is.null(factors$geo)) {
+    if (is.null(constraint)) {
       rda_results[[sample]] <- NULL
     }
     
@@ -120,15 +143,18 @@ spatially_constrained_rda <- function (response, explanatory, geo_pco) {
       r2 <- RsquareAdj(rda)$r.squared
       # Compute the adjusted explained variance
       r2_adj <- RsquareAdj(rda)$adj.r.squared
-      # Compute the p-value of the significance test
-      sig <- anova.cca(rda, step = 10000)$`Pr(>F)`[1]
-      rda_results[[sample]] <- list(r2=r2, r2_adj=r2_adj, sig=sig)
+      
+      # Perform permutations
+      r2_adj_perm <- permute_rda(10, response, explanatory, constraint)
+      
+      rda_results[[sample]] <- list(r2=r2, r2_adj=r2_adj, r2_adj_perm=r2_adj_perm)
     }
      if (i%%100 == 0) {
       print(paste(i, " samples processed"))
      }
   }
  return(rda_results)
+ 
 }
 
 # Genetics vs. grammar
