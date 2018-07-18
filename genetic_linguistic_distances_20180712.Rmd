@@ -88,7 +88,7 @@ Notes:
 
 ```{r}
 # Define filepath
-data_folder <- file.path("data")   # Data folder
+data_folder <- file.path("/Users/dblasi/Desktop/Music & Language/data")   # Data folder
 
 # Read the grammar, phonology and typlogy data (meta data)
 phonology_list <- readRDS(file.path(data_folder, "phonology/phonology.list.RDS"))
@@ -133,7 +133,7 @@ We only use variables with one data point per language, and only variables with 
 ```{r}
 # This function trims the data and only keeps variables in the study area 
 # with one data point per language and non-constant values
-trim_data <- function(data.list, trim.to=siberia_metadata_all, extra.coverage=.5) {
+trim_data <- function(data.list, trim.to=siberia_metadata_all, extra.coverage=.7) {
   lgs <- lapply(data.list, function(l) {
 	  l$UULID <- ifelse(l$isocode %in% c('bxm','bxr'),
 	  		   '[i-bua][a-1095][g-buri1258]',
@@ -173,9 +173,9 @@ For each site we compute the coverage, i.e. the percentage of available variable
 ```{r, message=FALSE, warning=FALSE}
 # Compute the coverage for each variable and visualize it 
 grammar_coverage <- compute_coverage(siberia_grammar_list) %>% 
-  select(Language, Coverage)
+  dplyr::select(Language, Coverage)
 phonology_coverage <- compute_coverage(siberia_phonology_list) %>% 
-  select(Language,Coverage)
+  dplyr::select(Language,Coverage)
 
 # Change variable names (see next section)
 # Grammar
@@ -226,14 +226,14 @@ flatten <- function(data.list, gg=siberia_metadata) {
     df <- data.list[[v]]
     var.name <- gsub('(.*\\$)', '\\2', names(data.list)[v])
     names(df)[1] <- var.name
-    return(select(df, UULID, everything()))
+    return(dplyr::select(df, UULID, dplyr::everything()))
     })
-  df.flat <- Reduce(function(x,y) full_join(x, y, by='UULID'), df.list)
+  df.flat <- Reduce(function(x,y) dplyr::full_join(x, y, by='UULID'), df.list)
   rownames(df.flat) <- sapply(df.flat$UULID, function(x) rownames(gg[gg$UULID %in% x,]))
   return(df.flat)}
 
 # Flatten the data
-grammar <- flatten(siberia_grammar_list)
+grammar <-flatten(siberia_grammar_list)
 phonology <- flatten(siberia_phonology_list)
 ```
 
@@ -329,7 +329,14 @@ phonology_famd <- FAMD(phonology[,-1],
                        graph=F)
 ```
 
-
+## New by DB
+Rescale the dimensions obtained through FAMD in relation to the explained variance:
+```{r rescale}
+for(i in 1:ncol(phonology_famd$ind$coord)) { 
+phonology_famd$ind$coord[,i]<-scale(phonology_famd$ind$coord[,i])*phonology_famd$eig[i,"percentage of variance"]}
+for(i in 1:ncol(grammar_famd$ind$coord)) {
+grammar_famd$ind$coord[,i]<-scale(grammar_famd$ind$coord[,1])*grammar_famd$eig[i,"percentage of variance"]}
+```
 
 ## Principal Coordinates Analysis (PCoA) (of Music and Genes)
 
