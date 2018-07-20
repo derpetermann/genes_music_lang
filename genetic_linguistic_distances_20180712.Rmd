@@ -331,7 +331,7 @@ phonology_famd <- FAMD(phonology[,-1],
 
 ## New by DB
 Rescale the dimensions obtained through FAMD in relation to the explained variance:
-```{r rescale}
+```{r pca_rescale}
 for(i in 1:ncol(phonology_famd$ind$coord)) { 
 phonology_famd$ind$coord[,i]<-scale(phonology_famd$ind$coord[,i])*phonology_famd$eig[i,"percentage of variance"]}
 for(i in 1:ncol(grammar_famd$ind$coord)) {
@@ -355,6 +355,14 @@ genetics_pcoa <- pcoa(genetics_dist, correction = "cailliez")
 music_pcoa <- pcoa(music_dist, correction = "cailliez") 
 ```
 
+## Scaling the PCoA components 
+
+```{r scale_pcoa}
+for(i in 1:ncol(genetics_pcoa$vectors)) { 
+genetics_pcoa$vectors[,i]<-scale(genetics_pcoa$vectors[,i])*genetics_pcoa$values$Rel_corr_eig[i]}
+for(i in 1:ncol(music_pcoa$vectors)) { 
+music_pcoa$vectors[,i]<-scale(music_pcoa$vectors[,i])*music_pcoa$values$Rel_corr_eig[i]}
+```
 
 
 ## Distance-based Moran's Eigenvector Map Analysis (dbMEM) (of the spatial locations)
